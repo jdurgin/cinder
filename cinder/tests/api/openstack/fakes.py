@@ -30,7 +30,6 @@ from cinder.api.openstack import volume
 from cinder.api.openstack.volume import versions
 from cinder.api.openstack import wsgi as os_wsgi
 from cinder import context
-from cinder.db.sqlalchemy import models
 from cinder import exception as exc
 from cinder import utils
 from cinder import wsgi
@@ -215,6 +214,18 @@ def stub_volume_create(self, context, size, name, description, snapshot,
     return vol
 
 
+def stub_volume_create_from_image(self, context, size, name, description,
+                                  snapshot, volume_type, metadata,
+                                  availability_zone):
+    vol = stub_volume('1')
+    vol['status'] = 'creating'
+    vol['size'] = size
+    vol['display_name'] = name
+    vol['display_description'] = description
+    vol['availability_zone'] = 'cinder'
+    return vol
+
+
 def stub_volume_update(self, context, *args, **param):
     pass
 
@@ -239,29 +250,3 @@ def stub_volume_get_all(context, search_opts=None):
 
 def stub_volume_get_all_by_project(self, context, search_opts=None):
     return [stub_volume_get(self, context, '1')]
-
-
-def stub_snapshot(id, **kwargs):
-    snapshot = {
-        'id': id,
-        'volume_id': 12,
-        'status': 'available',
-        'volume_size': 100,
-        'created_at': None,
-        'display_name': 'Default name',
-        'display_description': 'Default description',
-        'project_id': 'fake'
-        }
-
-    snapshot.update(kwargs)
-    return snapshot
-
-
-def stub_snapshot_get_all(self):
-    return [stub_snapshot(100, project_id='fake'),
-            stub_snapshot(101, project_id='superfake'),
-            stub_snapshot(102, project_id='superduperfake')]
-
-
-def stub_snapshot_get_all_by_project(self, context):
-    return [stub_snapshot(1)]

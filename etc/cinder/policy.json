@@ -12,5 +12,6 @@
 
     "volume_extension:types_manage": [["rule:admin_api"]],
     "volume_extension:types_extra_specs": [["rule:admin_api"]],
-    "volume_extension:extended_snapshot_attributes": []
+    "volume_extension:extended_snapshot_attributes": [],
+    "volume_extension:create_volume_ext": [],
 }

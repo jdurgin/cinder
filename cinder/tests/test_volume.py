@@ -20,6 +20,8 @@ Tests for Volume Code.
 
 """
 
+import os
+import datetime
 import cStringIO
 import logging
 
@@ -31,6 +33,7 @@ from cinder import context
 from cinder import exception
 from cinder import db
 from cinder import flags
+from cinder.tests.image import fake as fake_image
 from cinder.openstack.common import log as os_logging
 from cinder.openstack.common import importutils
 from cinder.openstack.common import rpc
@@ -52,11 +55,12 @@ class VolumeTestCase(test.TestCase):
                    volumes_dir=vol_tmpdir)
         self.volume = importutils.import_object(FLAGS.volume_manager)
         self.context = context.get_admin_context()
+        fake_image.stub_out_image_service(self.stubs)
 
     def tearDown(self):
         try:
             shutil.rmtree(FLAGS.volumes_dir)
-        except OSError, e:
+        except OSError:
             pass
         super(VolumeTestCase, self).tearDown()
 
@@ -361,6 +365,194 @@ class VolumeTestCase(test.TestCase):
         self.volume.delete_snapshot(self.context, snapshot_id)
         self.volume.delete_volume(self.context, volume_id)
 
+    def _create_volume_from_image(self, expected_status,
+                                  fakeout_copy_image_to_volume=False):
+        """Call copy image to volume, Test the status of volume after calling
+        copying image to volume."""
+        def fake_local_path(volume):
+            return dst_path
+
+        def fake_copy_image_to_volume(context, volume, image_id):
+            print "in fake_copy_image_to_volume"
+            pass
+
+        dst_fd, dst_path = tempfile.mkstemp()
+        os.close(dst_fd)
+        self.stubs.Set(self.volume.driver, 'local_path', fake_local_path)
+        if fakeout_copy_image_to_volume:
+            self.stubs.Set(self.volume, '_copy_image_to_volume',
+                           fake_copy_image_to_volume)
+
+        image_id = 'c905cedb-7281-47e4-8a62-f26bc5fc4c77'
+        volume_id = 1
+        # creating volume testdata
+        db.volume_create(self.context, {'id': volume_id,
+                            'updated_at': datetime.datetime(1, 1, 1, 1, 1, 1),
+                            'display_description': 'Test Desc',
+                            'size': 20,
+                            'status': 'creating',
+                            'instance_uuid': None,
+                            'host': 'dummy'})
+        try:
+            self.volume.create_volume_from_image(self.context,
+                                                 volume_id,
+                                                 image_id)
+
+            volume = db.volume_get(self.context, volume_id)
+            self.assertEqual(volume['status'], expected_status)
+        finally:
+            # cleanup
+            db.volume_destroy(self.context, volume_id)
+            os.unlink(dst_path)
+
+    def test_create_volume_from_image_status_downloading(self):
+        """Verify that before copying image to volume, it is in downloading
+        state."""
+        self._create_volume_from_image('downloading', True)
+
+    def test_create_volume_from_image_status_available(self):
+        """Verify that before copying image to volume, it is in available
+        state."""
+        self._create_volume_from_image('available')
+
+    def test_create_volume_from_image_exception(self):
+        """Verify that create volume from image, the volume status is
+        'downloading'."""
+        def fake_create_volume(context, volume_id, snapshot_id=None,
+                               status='available'):
+            db.volume_update(context, volume_id, {'status': status})
+            return db.volume_get(self.context, volume_id)
+
+        dst_fd, dst_path = tempfile.mkstemp()
+        os.close(dst_fd)
+
+        self.stubs.Set(self.volume.driver, 'local_path', lambda x: dst_path)
+        self.stubs.Set(self.volume, '_create_volume', fake_create_volume)
+
+        image_id = 'aaaaaaaa-0000-0000-0000-000000000000'
+        # creating volume testdata
+        volume_id = 1
+        db.volume_create(self.context, {'id': volume_id,
+                             'updated_at': datetime.datetime(1, 1, 1, 1, 1, 1),
+                             'display_description': 'Test Desc',
+                             'size': 20,
+                             'status': 'creating',
+                             'host': 'dummy'})
+
+        self.assertRaises(exception.ImageNotFound,
+                          self.volume.create_volume_from_image,
+                          self.context,
+                          volume_id,
+                          image_id)
+        volume = db.volume_get(self.context, volume_id)
+        self.assertEqual(volume['status'], "error")
+        # cleanup
+        db.volume_destroy(self.context, volume_id)
+        os.unlink(dst_path)
+
+    def test_copy_volume_to_image_status_available(self):
+        dst_fd, dst_path = tempfile.mkstemp()
+        os.close(dst_fd)
+
+        def fake_local_path(volume):
+            return dst_path
+
+        self.stubs.Set(self.volume.driver, 'local_path', fake_local_path)
+
+        image_id = '70a599e0-31e7-49b7-b260-868f441e862b'
+        # creating volume testdata
+        volume_id = 1
+        db.volume_create(self.context, {'id': volume_id,
+                             'updated_at': datetime.datetime(1, 1, 1, 1, 1, 1),
+                             'display_description': 'Test Desc',
+                             'size': 20,
+                             'status': 'uploading',
+                             'instance_uuid': None,
+                             'host': 'dummy'})
+
+        try:
+            # start test
+            self.volume.copy_volume_to_image(self.context,
+                                                volume_id,
+                                                image_id)
+
+            volume = db.volume_get(self.context, volume_id)
+            self.assertEqual(volume['status'], 'available')
+        finally:
+            # cleanup
+            db.volume_destroy(self.context, volume_id)
+            os.unlink(dst_path)
+
+    def test_copy_volume_to_image_status_use(self):
+        dst_fd, dst_path = tempfile.mkstemp()
+        os.close(dst_fd)
+
+        def fake_local_path(volume):
+            return dst_path
+
+        self.stubs.Set(self.volume.driver, 'local_path', fake_local_path)
+
+        #image_id = '70a599e0-31e7-49b7-b260-868f441e862b'
+        image_id = 'a440c04b-79fa-479c-bed1-0b816eaec379'
+        # creating volume testdata
+        volume_id = 1
+        db.volume_create(self.context,
+                         {'id': volume_id,
+                         'updated_at': datetime.datetime(1, 1, 1, 1, 1, 1),
+                         'display_description': 'Test Desc',
+                         'size': 20,
+                         'status': 'uploading',
+                         'instance_uuid':
+                            'b21f957d-a72f-4b93-b5a5-45b1161abb02',
+                         'host': 'dummy'})
+
+        try:
+            # start test
+            self.volume.copy_volume_to_image(self.context,
+                                                volume_id,
+                                                image_id)
+
+            volume = db.volume_get(self.context, volume_id)
+            self.assertEqual(volume['status'], 'in-use')
+        finally:
+            # cleanup
+            db.volume_destroy(self.context, volume_id)
+            os.unlink(dst_path)
+
+    def test_copy_volume_to_image_exception(self):
+        dst_fd, dst_path = tempfile.mkstemp()
+        os.close(dst_fd)
+
+        def fake_local_path(volume):
+            return dst_path
+
+        self.stubs.Set(self.volume.driver, 'local_path', fake_local_path)
+
+        image_id = 'aaaaaaaa-0000-0000-0000-000000000000'
+        # creating volume testdata
+        volume_id = 1
+        db.volume_create(self.context, {'id': volume_id,
+                             'updated_at': datetime.datetime(1, 1, 1, 1, 1, 1),
+                             'display_description': 'Test Desc',
+                             'size': 20,
+                             'status': 'in-use',
+                             'host': 'dummy'})
+
+        try:
+            # start test
+            self.assertRaises(exception.ImageNotFound,
+                              self.volume.copy_volume_to_image,
+                              self.context,
+                              volume_id,
+                              image_id)
+
+            volume = db.volume_get(self.context, volume_id)
+            self.assertEqual(volume['status'], 'available')
+        finally:
+            # cleanup
+            db.volume_destroy(self.context, volume_id)
+            os.unlink(dst_path)
+
 
 class DriverTestCase(test.TestCase):
     """Base Test class for Drivers."""
@@ -388,7 +580,7 @@ class DriverTestCase(test.TestCase):
     def tearDown(self):
         try:
             shutil.rmtree(FLAGS.volumes_dir)
-        except OSError, e:
+        except OSError:
             pass
         super(DriverTestCase, self).tearDown()
 
