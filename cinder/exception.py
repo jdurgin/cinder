@@ -946,3 +946,12 @@ class CouldNotFetchImage(CinderException):
 class VolumeBackendAPIException(CinderException):
     message = _("Bad or unexpected response from the storage volume "
                 "backend API: %(data)s")
+
+
+class RegionAmbiguity(CinderException):
+    message = _("Multiple '%(service_type)s' service matches for"
+                " region %(region)s.")
+
+
+class NoServiceEndpoint(CinderException):
+    message = _("Response from Keystone does not contain a matching endpoint.")
