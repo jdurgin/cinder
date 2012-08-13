@@ -112,23 +112,28 @@ class VolumeManager(manager.SchedulerDependentManager):
         #             before passing it to the driver.
         volume_ref['host'] = self.host
 
-        if image_id:
-            status = 'downloading'
-        else:
-            status = 'available'
+        status = 'available'
+        model_update = False
 
         try:
             vol_name = volume_ref['name']
             vol_size = volume_ref['size']
             LOG.debug(_("volume %(vol_name)s: creating lv of"
                     " size %(vol_size)sG") % locals())
-            if snapshot_id is None:
+            if snapshot_id is None and image_id is None:
                 model_update = self.driver.create_volume(volume_ref)
-            else:
+            elif snapshot_id is not None:
                 snapshot_ref = self.db.snapshot_get(context, snapshot_id)
                 model_update = self.driver.create_volume_from_snapshot(
                     volume_ref,
                     snapshot_ref)
+            else:
+                # create the volume from an image
+                cloned = self._try_clone(context, volume_ref, image_id)
+                if not cloned:
+                    model_update = self.driver.create_volume(volume_ref)
+                    status = 'downloading'
+
             if model_update:
                 self.db.volume_update(context, volume_ref['id'], model_update)
 
@@ -148,7 +153,7 @@ class VolumeManager(manager.SchedulerDependentManager):
         LOG.debug(_("volume %s: created successfully"), volume_ref['name'])
         self._reset_stats()
 
-        if image_id:
+        if image_id and not cloned:
             #copy the image onto the volume.
             self._copy_image_to_volume(context, volume_ref, image_id)
         return volume_ref['id']
@@ -253,6 +258,18 @@ class VolumeManager(manager.SchedulerDependentManager):
         # TODO(vish): refactor this into a more general "unreserve"
         # TODO(sleepsonthefloor): Is this 'elevated' appropriate?
         self.db.volume_detached(context.elevated(), volume_id)
+
+    def _try_clone(self, context, volume_ref, image_id):
+        """Attempts to clone a volume from an image.
+        Returns whether this was possible"""
+        image_service, image_id = glance.get_remote_image_service(context,
+                                                                  image_id)
+        image_location = image_service.get_location(context, image_id)
+        if (image_location is None or
+            not self.driver.is_cloneable(image_location)):
+            return False
+        self.driver.clone_image(volume_ref, image_location)
+        return True
 
     def _copy_image_to_volume(self, context, volume, image_id):
         """Downloads Glance image to the specified volume. """

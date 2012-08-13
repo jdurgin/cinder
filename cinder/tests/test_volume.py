@@ -549,6 +549,78 @@ class VolumeTestCase(test.TestCase):
             db.volume_destroy(self.context, volume_id)
             os.unlink(dst_path)
 
+    def _clone_volume_from_image(self, expected_status,
+                                 clone_works=True):
+        """Try to clone a volume from an image, and check the status
+        afterwards"""
+        def fake_local_path(volume):
+            return dst_path
+
+        def fake_clone_image(volume, image_location):
+            pass
+
+        def fake_clone_error(volume, image_location):
+            raise exception.CinderException()
+
+        dst_fd, dst_path = tempfile.mkstemp()
+        os.close(dst_fd)
+        self.stubs.Set(self.volume.driver, 'is_cloneable', lambda x: True)
+        if clone_works:
+            self.stubs.Set(self.volume.driver, 'clone_image', fake_clone_image)
+        else:
+            self.stubs.Set(self.volume.driver, 'clone_image', fake_clone_error)
+
+        image_id = 'c905cedb-7281-47e4-8a62-f26bc5fc4c77'
+        volume_id = 1
+        # creating volume testdata
+        db.volume_create(self.context, {'id': volume_id,
+                            'updated_at': datetime.datetime(1, 1, 1, 1, 1, 1),
+                            'display_description': 'Test Desc',
+                            'size': 20,
+                            'status': 'creating',
+                            'instance_uuid': None,
+                            'host': 'dummy'})
+        try:
+            if clone_works:
+                self.volume.create_volume(self.context,
+                                          volume_id,
+                                          image_id=image_id)
+            else:
+                self.assertRaises(exception.CinderException,
+                                  self.volume.create_volume,
+                                  self.context,
+                                  volume_id,
+                                  image_id=image_id)
+
+            volume = db.volume_get(self.context, volume_id)
+            self.assertEqual(volume['status'], expected_status)
+        finally:
+            # cleanup
+            db.volume_destroy(self.context, volume_id)
+            os.unlink(dst_path)
+
+    def test_clone_image_status_available(self):
+        """Verify that before cloning, an image is in the available state."""
+        self._clone_volume_from_image('available', True)
+
+    def test_clone_image_status_error(self):
+        """Verify that before cloning, an image is in the available state."""
+        self._clone_volume_from_image('error', False)
+
+    def test_try_clone_success(self):
+        self.stubs.Set(self.volume.driver, 'is_cloneable', lambda x: True)
+        self.stubs.Set(self.volume.driver, 'clone_image', lambda a, b: True)
+        image_id = 'c905cedb-7281-47e4-8a62-f26bc5fc4c77'
+        self.assertTrue(self.volume._try_clone(self.context, {}, image_id))
+
+    def test_try_clone_bad_image_id(self):
+        self.stubs.Set(self.volume.driver, 'is_cloneable', lambda x: True)
+        self.assertFalse(self.volume._try_clone(self.context, {}, None))
+
+    def test_try_clone_uncloneable(self):
+        self.stubs.Set(self.volume.driver, 'is_cloneable', lambda x: False)
+        self.assertFalse(self.volume._try_clone(self.context, {}, 'dne'))
+
 
 class DriverTestCase(test.TestCase):
     """Base Test class for Drivers."""
