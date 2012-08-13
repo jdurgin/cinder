@@ -505,17 +505,43 @@ class RBDDriver(VolumeDriver):
                                     FLAGS.rbd_pool)
             raise exception.VolumeBackendAPIException(data=exception_message)
 
+    def _supports_layering(self):
+        stdout, _ = self._execute('rbd', '--help')
+        return 'clone' in stdout
+
     def create_volume(self, volume):
         """Creates a logical volume."""
         if int(volume['size']) == 0:
             size = 100
         else:
             size = int(volume['size']) * 1024
-        self._try_execute('rbd', '--pool', FLAGS.rbd_pool,
-                          '--size', size, 'create', volume['name'])
+        args = [
+            'rbd', '--pool', FLAGS.rbd_pool,
+            '--size', size, 'create', volume['name']
+            ]
+        if self._supports_layering():
+            args += ['--new-format']
+        self._try_execute(*args)
+
+    def create_volume_from_snapshot(self, volume, snapshot):
+        """Creates a volume from a snapshot."""
+        self._try_execute('rbd', 'clone',
+                          '--pool', FLAGS.rbd_pool,
+                          '--image', snapshot['volume_name'],
+                          '--snap', snapshot['name'],
+                          '--dest-pool', FLAGS.rbd_pool,
+                          '--dest', volume['name'])
+        if int(volume['size']):
+            size = int(volume['size']) * 1024
+            self._try_execute('rbd', '--pool', FLAGS.rbd_pool,
+                              'resize', '--size', size, volume['name'])
 
     def delete_volume(self, volume):
         """Deletes a logical volume."""
+        stdout, _ = self._execute('rbd', '--pool', FLAGS.rbd_pool,
+                                  'snap', 'ls', volume['name'])
+        if stdout.count('\n') > 1:
+            raise exception.VolumeIsBusy(volume_name=volume['name'])
         self._try_execute('rbd', '--pool', FLAGS.rbd_pool,
                           'rm', volume['name'])
 
@@ -524,9 +550,21 @@ class RBDDriver(VolumeDriver):
         self._try_execute('rbd', '--pool', FLAGS.rbd_pool,
                           'snap', 'create', '--snap', snapshot['name'],
                           snapshot['volume_name'])
+        if self._supports_layering():
+            self._try_execute('rbd', '--pool', FLAGS.rbd_pool,
+                              'snap', 'protect', '--snap', snapshot['name'],
+                              snapshot['volume_name'])
 
     def delete_snapshot(self, snapshot):
         """Deletes an rbd snapshot"""
+        if self._supports_layering():
+            try:
+                self._try_execute('rbd', '--pool', FLAGS.rbd_pool,
+                                  'snap', 'unprotect',
+                                  '--snap', snapshot['name'],
+                                  snapshot['volume_name'])
+            except exception.ProcessExecutionError:
+                raise exception.SnapshotIsBusy(snapshot_name=snapshot['name'])
         self._try_execute('rbd', '--pool', FLAGS.rbd_pool,
                           'snap', 'rm', '--snap', snapshot['name'],
                           snapshot['volume_name'])
