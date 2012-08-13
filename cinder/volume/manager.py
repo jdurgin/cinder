@@ -98,8 +98,7 @@ class VolumeManager(manager.SchedulerDependentManager):
             else:
                 LOG.info(_("volume %s: skipping export"), volume['name'])
 
-    def _create_volume(self, context, volume_id, snapshot_id=None,
-                       status='available'):
+    def _create_volume(self, context, volume_id, snapshot_id=None, image_id=None):
         """Creates and exports the volume."""
         context = context.elevated()
         volume_ref = self.db.volume_get(context, volume_id)
@@ -117,13 +116,28 @@ class VolumeManager(manager.SchedulerDependentManager):
             vol_size = volume_ref['size']
             LOG.debug(_("volume %(vol_name)s: creating lv of"
                     " size %(vol_size)sG") % locals())
-            if snapshot_id is None:
+            if snapshot_id is None and image_id is None:
                 model_update = self.driver.create_volume(volume_ref)
-            else:
+            elif snapshot_id is not None:
                 snapshot_ref = self.db.snapshot_get(context, snapshot_id)
                 model_update = self.driver.create_volume_from_snapshot(
                     volume_ref,
                     snapshot_ref)
+            else:
+                image_service, image_id = \
+                    glance.get_remote_image_service(context, image_id)
+                image_location = image_service.get_location(context, image_id)
+                if image_location is not None and \
+                        self.driver.is_clonable(image_location):
+                    model_update = self.driver.clone_image(volume_ref,
+                                                           image_location)
+                else:
+                    # TODO: put this after the db update
+                    self._copy_image_to_volume(context, volume_ref, image_id)
+                    model_update = self.driver.create_volume(volume_ref)
+                    self.driver.copy_image_to_volume(context, volume,
+                                                     image_service, image_id)
+
             if model_update:
                 self.db.volume_update(context, volume_ref['id'], model_update)
 
@@ -138,7 +152,7 @@ class VolumeManager(manager.SchedulerDependentManager):
 
         now = timeutils.utcnow()
         self.db.volume_update(context,
-                              volume_ref['id'], {'status': status,
+                              volume_ref['id'], {'status': 'available',
                                                  'launched_at': now})
         LOG.debug(_("volume %s: created successfully"), volume_ref['name'])
         self._reset_stats()
@@ -146,15 +160,12 @@ class VolumeManager(manager.SchedulerDependentManager):
 
     def create_volume(self, context, volume_id, snapshot_id=None):
         """Creates and exports the volume."""
-        volume = self._create_volume(context, volume_id, snapshot_id)
+        volume = self._create_volume(context, volume_id, snapshot_id=snapshot_id)
         return volume_id
 
     def create_volume_from_image(self, context, volume_id, image_id):
         """Creates the volume and copies specified image onto it."""
-        volume = self._create_volume(context, volume_id, status='downloading')
-
-        #copy the image onto the volume.
-        self._copy_image_to_volume(context, volume, image_id)
+        volume = self._create_volume(context, volume_id, image_id=image_id)
         return volume_id
 
     def delete_volume(self, context, volume_id):
@@ -270,8 +281,6 @@ class VolumeManager(manager.SchedulerDependentManager):
                                              image_id)
             LOG.debug(_("Downloaded image %(image_id)s to %(volume_id)s "
                         "successfully") % locals())
-            self.db.volume_update(context, volume_id,
-                                  {'status': 'available'})
         except Exception, error:
             with excutils.save_and_reraise_exception():
                 payload['message'] = unicode(error)

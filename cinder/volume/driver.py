@@ -21,6 +21,7 @@ Drivers for volumes.
 """
 
 import time
+import urllib
 
 from cinder import exception
 from cinder import flags
@@ -243,6 +244,20 @@ class VolumeDriver(object):
 
     def copy_volume_to_image(self, context, volume, image_service, image_id):
         """Copy the volume to the specified image."""
+        raise NotImplementedError()
+
+    def is_clonable(self, image_location):
+        """Returns whether this volume driver can efficiently create a volume
+        from the given image location."""
+        return False
+
+    def clone_image(self, volume, image_location):
+        """Create a volume efficiently from an existing image stored that is
+        clonable by the volume driver.
+
+        This should only be called if is_cloneable returned True for
+        the image_location.
+        """
         raise NotImplementedError()
 
 
@@ -585,6 +600,53 @@ class RBDDriver(VolumeDriver):
 
     def terminate_connection(self, volume, connector):
         pass
+
+    def _parse_location(self, location):
+        prefix = 'rbd://'
+        if not location.startswith(prefix):
+            reason = _('Image %s is not stored in rbd') % location
+            raise exception.ImageUnacceptable(reason)
+        pieces = map(urllib.unquote, location[len(prefix):].split('/'))
+        if any(map(lambda p: p == '', pieces)):
+            reason = _('Image %s has blank components') % location
+            raise exception.ImageUnacceptable(reason)
+        if len(pieces) != 4:
+            reason = _('Image %s is not an rbd snapshot') % location
+            raise exception.ImageUnacceptable(reason)
+        return pieces
+
+    def is_clonable(self, image_location):
+        try:
+            fsid, pool, image, snapshot = self._parse_location(image_location)
+        except exception.ImageUnacceptable:
+            return False
+
+        stdout, _ = self._execute('ceph', 'fsid')
+        if stdout.rstrip('\n') != fsid:
+            reason = _('%s is in a different ceph cluster') % image_location
+            LOG.debug(reason)
+            return False
+
+        # check that we can read the image
+        try:
+            self._execute('rbd', 'info', '--pool', pool,
+                          '--image', image, '--snap', snapshot)
+        except exception.ProcessExecutionError:
+            LOG.debug(_('Unable to read image %s') % image_location)
+            return False
+
+        return True
+
+    def clone_image(self, volume, image_location):
+        # TODO(jdurgin): handle differently sized clones
+        _, pool, image, snapshot = self._parse_location(image_location)
+        self._try_execute('rbd', 'clone', '--pool', pool, '--image', image,
+                          '--snap', snapshot, '--dest-pool', FLAGS.rbd_pool,
+                          '--dest', volume['name'])
+
+    def copy_image_to_volume(context, volume, image_service, image_id):
+        # TODO(jdurgin): rewrite to use librbd, or store image in local file
+        raise NotImplementedError()
 
 
 class SheepdogDriver(VolumeDriver):
